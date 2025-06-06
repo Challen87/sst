@@ -153,7 +153,7 @@ if MODEL in ["SVM", "SVM_grid", "SGD", "nearest"]:
 else:
     model, _, _, hyperparams = get_model(MODEL, **hyperparams)
     model.load_state_dict(torch.load(CHECKPOINT))
-    probabilities = test(model, img, hyperparams)
+    seg_probs, reg_pred = test(model, img, hyperparams)
     prediction = np.argmax(probabilities, axis=-1)
 
 filename = dirname + "/" + basename + ".tif"

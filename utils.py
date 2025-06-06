@@ -541,3 +541,10 @@ def compute_imf_weights(ground_truth, n_classes=None, ignored_classes=[]):
 def camel_to_snake(name):
     s = re.sub('(.)([A-Z][a-z]+)', r'\1_\2', name)
     return re.sub('([a-z0-9])([A-Z])', r'\1_\2', s).lower()
+
+def regression_metrics(y_pred, y_true):
+    from sklearn.metrics import mean_squared_error, r2_score
+    mask = ~np.isnan(y_true)
+    rmse = mean_squared_error(y_true[mask], y_pred[mask], squared=False)
+    r2 = r2_score(y_true[mask], y_pred[mask])
+    return {"RMSE": rmse, "R2": r2}

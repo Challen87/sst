@@ -333,7 +333,7 @@ def get_dataset(dataset_name, target_folder="./", datasets=DATASETS_CONFIG):
 class HyperX(torch.utils.data.Dataset):
     """ Generic class for a hyperspectral scene """
 
-    def __init__(self, data, gt, **hyperparams):
+    def __init__(self, data, gt, reg_map=None, **hyperparams):
         """
         Args:
             data: 3D hyperspectral image
@@ -347,6 +347,7 @@ class HyperX(torch.utils.data.Dataset):
         super(HyperX, self).__init__()
         self.data = data
         self.label = gt
+        self.reg_map = reg_map  # 新增：回归标签2D数组，和gt同shape
         self.name = hyperparams["dataset"]
         self.patch_size = hyperparams["patch_size"]
         self.ignored_labels = set(hyperparams["ignored_labels"])
@@ -415,6 +416,13 @@ class HyperX(torch.utils.data.Dataset):
         data = self.data[x1:x2, y1:y2]
         label = self.label[x1:x2, y1:y2]
 
+        # 加载回归标签（如叶绿素/面积等），假设有 self.reg_map
+        if hasattr(self, "reg_map") and self.reg_map is not None:
+            reg_label = self.reg_map[x, y]  # 只取中心点值
+            reg_label = torch.tensor(reg_label, dtype=torch.float32)
+        else:
+            reg_label = torch.tensor(0.0, dtype=torch.float32)  # 没有则补零/NaN
+
         if self.flip_augmentation and self.patch_size > 1:
             # Perform data augmentation (only on 2D patches)
             data, label = self.flip(data, label)
@@ -442,4 +450,6 @@ class HyperX(torch.utils.data.Dataset):
         if self.patch_size > 1:
             # Make 4D data ((Batch x) Planes x Channels x Width x Height)
             data = data.unsqueeze(0)
-        return data, label
+        return data, label, reg_label
+
+

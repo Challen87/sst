@@ -56,7 +56,8 @@ def dfc2018_loader(folder):
 def tomato_loader(folder):
     # 加载高光谱影像和标签
     img = open_file(folder + "2311271-1img.mat")["image"]    # 路径和变量名请根据实际情况调整
-    gt = open_file(folder + "2311271-1label.mat")["label"]
+    seg_gt = open_file(folder + "2311271-1label.mat")["label"]
+    reg_gt = open_file(folder + "tomato_reg.mat")["reg"]  # 新增回归标签行
     rgb_bands = (13,30,55)  # 你可以指定3个可视化波段的索引，如(10, 20, 30)，否则用None
     label_values = [
         "background",   # 假设0为背景
@@ -65,4 +66,15 @@ def tomato_loader(folder):
     ]
     ignored_labels = [0]  # 如果0是背景
     palette = None        # 可选：自定义可视化调色板
-    return img, gt, rgb_bands, ignored_labels, label_values, palette
+    return img, seg_gt, reg_gt, rgb_bands, ignored_labels, label_values, palette
+
+CUSTOM_DATASETS_CONFIG = {
+    "tomato": {
+        "img": "tomato.mat",
+        "gt": "tomato_label.mat",
+        "reg": "tomato_reg.mat",  # 可选，方便主程序读取变量名
+        "download": False,
+        "loader": lambda folder: tomato_loader(folder),
+    }
+}
+

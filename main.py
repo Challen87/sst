@@ -240,7 +240,7 @@ if not viz.check_connection:
 
 hyperparams = vars(args)
 # Load the dataset
-img, gt, LABEL_VALUES, IGNORED_LABELS, RGB_BANDS, palette = get_dataset(DATASET, FOLDER)
+img, gt, reg_gt, LABEL_VALUES, IGNORED_LABELS, RGB_BANDS, palette = get_dataset(DATASET, FOLDER)
 # Number of classes
 N_CLASSES = len(LABEL_VALUES)
 # Number of bands (last dimension of the image tensor)
@@ -377,7 +377,9 @@ for run in range(N_RUNS):
         # Split train set in train/val
         train_gt, val_gt = sample_gt(train_gt, 0.95, mode="random")
         # Generate the dataset
-        train_dataset = HyperX(img, train_gt, **hyperparams)
+        # 加载regression标签，与gt shape一致
+        reg_map = open_file(FOLDER + "tomato_chl_label.mat")["chl"]
+        train_dataset = HyperX(img, train_gt, reg_map=reg_map, **hyperparams)
         train_loader = data.DataLoader(
             train_dataset,
             batch_size=hyperparams["batch_size"],
@@ -394,7 +396,7 @@ for run in range(N_RUNS):
         print(hyperparams)
         print("Network :")
         with torch.no_grad():
-            for input, _ in train_loader:
+            for input, _, _ in train_loader:
                 break
             summary(model.to(hyperparams["device"]), input.size()[1:])
             # We would like to use device=hyperparams['device'] altough we have

@@ -1044,16 +1044,30 @@ def train(
         avg_loss = 0.0
 
         # Run the training loop for one epoch
-        for batch_idx, (data, target) in tqdm(
+        for batch_idx, batch in tqdm(
             enumerate(data_loader), total=len(data_loader)
         ):
             # Load the data into the GPU if required
-            data, target = data.to(device), target.to(device)
-
-            optimizer.zero_grad()
-            if supervision == "full":
+            if len(batch) == 3:
+                data, seg_label, reg_label = batch
+                data, seg_label, reg_label = data.to(device), seg_label.to(device), reg_label.to(device)
+                optimizer.zero_grad()
+                seg_logits, reg_pred = net(data)
+                seg_loss = criterion[0](seg_logits, seg_label)
+                reg_loss = criterion[1](reg_pred, reg_label)
+                total_loss = seg_loss + lambda_reg * reg_loss
+                total_loss.backward()
+                optimizer.step()
+                loss = total_loss
+            else:
+                data, target = batch
+                data, target = data.to(device), target.to(device)
+                optimizer.zero_grad()
                 output = net(data)
                 loss = criterion(output, target)
+                loss.backward()
+                optimizer.step()
+
             elif supervision == "semi":
                 outs = net(data)
                 output, rec = outs
@@ -1228,3 +1242,107 @@ def val(net, data_loader, device="cpu", supervision="full"):
                     accuracy += out.item() == pred.item()
                     total += 1
     return accuracy / total
+
+
+# ---- 新增或放在文件末尾 ----
+import torch
+import torch.nn as nn
+
+class SSTBlock(nn.Module):
+    """Spectral-Spatial Transformer回归分支（简易）"""
+    def __init__(self, in_channels, embed_dim=64, num_heads=4, num_layers=2):
+        super().__init__()
+        self.proj = nn.Conv2d(in_channels, embed_dim, 1)
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=embed_dim, nhead=num_heads, batch_first=True, norm_first=True
+        )
+        self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
+        self.head = nn.Sequential(
+            nn.Conv2d(embed_dim, 32, 3, padding=1),
+            nn.ReLU(),
+            nn.Conv2d(32, 1, 1)
+        )
+    def forward(self, x):
+        B, C, H, W = x.shape
+        x = self.proj(x)  # (B, embed_dim, H, W)
+        # 对每个空间点的embed_dim向量做Transformer
+        x_flat = x.permute(0, 2, 3, 1).reshape(-1, 1, x.shape[1])  # (B*H*W, 1, embed_dim)
+        x_trans = self.transformer(x_flat).squeeze(1).reshape(B, H, W, -1).permute(0, 3, 1, 2)
+        y = self.head(x_trans)  # (B, 1, H, W)
+        return y
+
+class MLPRegressionHead(nn.Module):
+    """MLP回归头：全局平均池化+MLP"""
+    def __init__(self, in_channels, hidden=64):
+        super().__init__()
+        self.pool = nn.AdaptiveAvgPool2d(1)
+        self.mlp = nn.Sequential(
+            nn.Flatten(),
+            nn.Linear(in_channels, hidden),
+            nn.ReLU(),
+            nn.Linear(hidden, 1)
+        )
+    def forward(self, x):
+        x = self.pool(x)  # (B, C, 1, 1)
+        return self.mlp(x)[:, None, None, None]  # (B, 1, 1, 1)
+
+class ConvRegressionHead(nn.Module):
+    """卷积回归头：3层卷积"""
+    def __init__(self, in_channels):
+        super().__init__()
+        self.head = nn.Sequential(
+            nn.Conv2d(in_channels, 32, 3, padding=1),
+            nn.ReLU(),
+            nn.Conv2d(32, 16, 3, padding=1),
+            nn.ReLU(),
+            nn.Conv2d(16, 1, 1)
+        )
+    def forward(self, x):
+        return self.head(x)  # (B, 1, H, W)
+
+class SegGuidedRegressionNet(nn.Module):
+    """分割引导回归多头网络，reg_type支持sst/mlp/conv"""
+    def __init__(self, input_channels, n_classes, patch_size=5, reg_type="sst", **reg_kwargs):
+        super().__init__()
+        # 可复用已有主干网络
+        self.backbone = HamidaEtAl(input_channels, n_classes, patch_size=patch_size)
+        self.seg_head = nn.Identity()  # HamidaEtAl已输出分割logits
+        # 回归头
+        if reg_type == "sst":
+            self.reg_head = SSTBlock(self.backbone.features_size + n_classes, **reg_kwargs)
+        elif reg_type == "mlp":
+            self.reg_head = MLPRegressionHead(self.backbone.features_size + n_classes)
+        elif reg_type == "conv":
+            self.reg_head = ConvRegressionHead(self.backbone.features_size + n_classes)
+        else:
+            raise ValueError("Unknown reg_type")
+    def forward(self, x):
+        feat = self.backbone(x)  # (B, features_size)
+        seg_logits = feat  # HamidaEtAl返回即为分类logits
+        seg_probs = torch.softmax(seg_logits, 1)
+        # 融合分割概率
+        reg_input = torch.cat([feat, seg_probs], dim=1)
+        reg_pred = self.reg_head(reg_input)
+        return seg_logits, reg_pred
+
+
+def get_model(name, **kwargs):
+    ...
+    if name == "seg_sst_dualhead":
+        model = SegGuidedRegressionNet(
+            input_channels=n_bands,
+            n_classes=n_classes,
+            patch_size=kwargs.get("patch_size", 5),
+            reg_type=kwargs.get("reg_type", "sst"),
+            embed_dim=kwargs.get("sst_embed_dim", 64),  # 只SST用
+            num_heads=kwargs.get("sst_heads", 4),
+            num_layers=kwargs.get("sst_layers", 2)
+        )
+        lr = kwargs.setdefault("learning_rate", 0.01)
+        optimizer = optim.Adam(model.parameters(), lr=lr)
+        # 损失为tuple，train需适配
+        criterion = (nn.CrossEntropyLoss(weight=kwargs["weights"]), nn.MSELoss())
+        kwargs.setdefault("epoch", 100)
+        kwargs.setdefault("batch_size", 100)
+        return model, optimizer, criterion, kwargs
+    ...
